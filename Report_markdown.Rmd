@@ -1,0 +1,208 @@
+---
+title: "Анализ сетей фильмов"
+author: "Егоров Кирилл, ksegorov"
+output: 
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Преобразование и загрузка данных
+Для ответа на исследовательские вопросы, требующие данных о награжденниях премией оскар, был использован [датасет The Oscar Award, 1927 - 2020](https://www.kaggle.com/datasets/unanimad/the-oscar-award?select=the_oscar_award.csv). Датасет был обработан и режиссеры, получившие оскар, были записаны в вектор oscar_winners. Поскольку на исследовательские вопросы требовалась работа с метаданными, но, как выяснилось, не на все фильмы есть метаданные, было принято решение выделить единую подгруппу и использовать ее для всех исследовательских вопросов. Из 450 фильмов было выделено 364 фильма по следующим условиям: фильм должен иметь хотя бы одну связь, фильм должен быть хотя бы один тег, оцененный пользователем.  
+```{r message=FALSE, warning=FALSE}
+library(igraph)
+library(dplyr)
+library(tidyverse)
+library(tidygraph)
+library(ggraph)
+library(ggforce)
+library(concaveman)
+movie_net = read_graph("~/minor2_2021/2-tm-net/hw/data/top_movie_net.hml", 
+                        format = "graphml")
+load("~/minor2_2021/2-tm-net/hw/data/metadata.RData")
+
+oscar_winners = c("Frank Lloyd","Lewis Milestone","Norman Taurog","Frank Borzage","Frank Lloyd","Frank Capra","John Ford","Frank Capra","Leo McCarey","Frank Capra","Victor Fleming","John Ford","John Ford","William Wyler","Michael Curtiz","Leo McCarey","Billy Wilder","William Wyler","Elia Kazan","John Huston","Joseph L. Mankiewicz","Joseph L. Mankiewicz","George Stevens","John Ford","Fred Zinnemann","Elia Kazan","Delbert Mann","George Stevens","David Lean","Vincente Minnelli","William Wyler","Billy Wilder","Robert Wise, Jerome Robbins","David Lean","Tony Richardson","George Cukor","Robert Wise","Fred Zinnemann","Mike Nichols","Carol Reed","John Schlesinger","Franklin J. Schaffner","William Friedkin","Bob Fosse","George Roy Hill","Francis Ford Coppola","Milos Forman","John G. Avildsen","Woody Allen","Michael Cimino","Robert Benton","Robert Redford","Warren Beatty","Richard Attenborough","James L. Brooks","Milos Forman","Sydney Pollack","Oliver Stone","Bernardo Bertolucci","Barry Levinson","Oliver Stone","Kevin Costner","Jonathan Demme","Clint Eastwood","Steven Spielberg","Robert Zemeckis","Mel Gibson","Anthony Minghella","James Cameron","Steven Spielberg","Sam Mendes","Steven Soderbergh","Ron Howard","Roman Polanski","Peter Jackson","Clint Eastwood","Ang Lee","Martin Scorsese","Joel Coen and Ethan Coen","Danny Boyle","Kathryn Bigelow","Tom Hooper","Michel Hazanavicius","Ang Lee","Alfonso CuarГіn","Alejandro G. IГ±ГЎrritu","Alejandro G. IГ±ГЎrritu","Damien Chazelle","Guillermo del Toro","Alfonso CuarГіn","Bong Joon Ho")
+oscar = as.data.frame(oscar_winners)
+
+## Удалим ноды без еджей из графа
+Isolated = which(degree(movie_net)==0)
+movies_graph = delete.vertices(movie_net, Isolated)
+
+## Удалим ноды без еджей из метадаты
+metadata = metadata %>% 
+  filter(item_id %in% V(movies_graph)$name)
+
+## Совпадение по оскару
+metadata = metadata %>% 
+  mutate(is_oscar_winner = ifelse(directedBy %in% oscar$oscar_winners, TRUE, FALSE))
+
+## На какие фильмы есть теги и сколько их?
+survey_answers = survey_answers %>% group_by(item_id) %>% summarise(count = n()) %>% filter(item_id %in% metadata$item_id)
+survey_answers = survey_answers %>%  arrange(desc(item_id))
+
+## Удалим из метадаты фильмы без тегов
+metadata = metadata %>%  filter(item_id %in% survey_answers$item_id)
+
+## Удалим эти фильмы из графа
+movies_graph = movies_graph %>% as_tbl_graph()
+movies_graph = movies_graph %>% activate(nodes) %>% 
+    filter(name %in% metadata$item_id)
+```
+
+## Исследовательские вопросы
+
+**Использованные меры центральности: degree, closenness**
+
+## Выявление значимых вершин
+```{r message=FALSE, warning=FALSE}
+metadata$degree = as.numeric(degree(movies_graph))
+metadata$betweenness = betweenness(movies_graph)
+```
+
+### Правда ли, что у фильмов, снятых режиссерами, не получивших премию "Оскар" за свою карьеру, в среднем меньше связей по похожести, чем у фильмов, чьи режиссеры получили данную премию?
+```{r warning=FALSE}
+metadata$is_oscar_winner = as.factor(metadata$is_oscar_winner)
+t.test(degree ~ is_oscar_winner, data = metadata)
+```
+#### Выводы
+Недостаточно оснований отклонить нулевую гипотезу об отсутствии взаимосвязи между средними значениями связей по похожести фильмов по фактору наличия у режиссеров этих фильмов премии оскар, поскольку pvalue > 0.05 (0.2806).
+
+### Правда ли, что фильмы, имеющие большее количество тегов, склонны являться посредниками между группами?
+```{r message=FALSE, warning=FALSE}
+metadata$count_tags = survey_answers$count
+cor.test(x = metadata$count_tags, y = metadata$betweenness)
+```
+
+#### Визуализация
+```{r message=FALSE, warning=FALSE}
+ggplot(data = metadata) +
+  geom_point(aes(x = log(count_tags), y = log(betweenness))) +
+  xlab("Количество оцененных тегов (log)") +
+  ylab("Значение betweenness центральности (log)") +
+  ggtitle("Коррелляция количества тегов у фильмов и значения\nbetweenness centrality этих фильмов") +
+  theme_bw() 
+```
+
+#### Выводы
+Фильмы, имеющие большее количество тегов, склонны являться посредниками между группами. Было получен статистически значимое высокое значение корелляции ~0.725 между количеством тегов и betweenness centrality данных фильмов при pvalue < 0.05 (2.2e-16).
+
+### Правда ли, что фильмы, снятые режиссерами, которые имели премию оскар или были награждены ею впоследствии, склонны образовывать связи и сообщества с такими же фильмами?
+
+**Использованные меры выделения сообществ: Leading Eigenvector Community**
+
+## Выявление групп фильмов
+```{r message=FALSE, warning=FALSE}
+library(igraph)
+ebcommune <- edge.betweenness.community(movies_graph)
+fgcommune <- fastgreedy.community(movies_graph)
+wtcommune <- walktrap.community(movies_graph) 
+leading =  leading.eigenvector.community(movies_graph) 
+modularity(ebcommune)
+modularity(fgcommune)
+modularity(wtcommune)
+modularity(leading)
+V(movies_graph)$membership = membership(fgcommune)
+```
+Алгоритм выделения сообществ Leading Eigenvector имеет лучшее значение modularity и будет использоваться далее.
+
+```{r message=FALSE, warning=FALSE}
+## Проверка на склонность образовывать связи по оскару
+V(movies_graph)$oscar = as.factor(metadata$is_oscar_winner)
+dannie = movies_graph
+number_of_permutations = 10000
+assortativity_shuffled  <- rep(NA, number_of_permutations)
+for(i in 1:number_of_permutations){
+  V(dannie)$attr_shuffled = sample(V(dannie)$oscar, replace = F)
+  assortativity_shuffled[i] = assortativity_nominal(dannie,as.factor(V(dannie)$attr_shuffled))
+}
+## Квантили при случайном распределении
+q <- quantile(assortativity_shuffled, c(0.05, 0.95))
+## Реальная ассортативность
+assortativity_real = assortativity_nominal(dannie, V(dannie)$oscar, directed = F)
+## p-value
+pvalue_01 = sum(abs(assortativity_shuffled) >= abs(assortativity_real)) / number_of_permutations
+library(ggplot2)
+df <- data.frame(assortativity_shuffled = assortativity_shuffled) 
+ggplot(df) +
+  geom_histogram(aes(assortativity_shuffled), fill="lightgreen") + 
+  geom_vline(xintercept=assortativity_real, color="black",  linetype = "dashed")+ 
+  geom_vline(xintercept=q[1], color="red") +
+  geom_vline(xintercept=q[2], color="red") +
+  xlab("Случайно распределенное перемешанное значение assortiativity") +
+  ylab("Количество совпадений") +
+  geom_text(aes(x=assortativity_real-0.005, label="\nreal assortiativity", y=500), colour="blue", angle=90, text=element_text(size=11)) +
+  ggtitle("Гистограмма распределения перемешанных значений assortiativity\nпо наличию оскара у режиссера фильма") +
+  theme_bw() 
+```
+```{r}
+pvalue_01
+```
+
+```{r message=FALSE, warning=FALSE}
+## Перемешаем 10000 раз
+dannie = movies_graph
+number_of_permutations = 10000
+assortativity_shuffled  <- rep(NA, number_of_permutations)
+for(i in 1:number_of_permutations){
+  V(dannie)$attr_shuffled = sample(V(dannie)$membership, replace = F)
+  assortativity_shuffled[i] = assortativity_nominal(dannie,as.factor(V(dannie)$attr_shuffled))
+}
+
+#Квантили при случайном перемешивании
+q <- quantile(assortativity_shuffled, c(0.05, 0.95))
+
+## Реальная ассортативность
+assortativity_real = assortativity_nominal(dannie, V(dannie)$membership, directed = F)
+## pvalue
+pvalue_02 = sum(abs(assortativity_shuffled) >= abs(assortativity_real)) / number_of_permutations
+## Визуализация второй части вопроса
+library(ggplot2)
+df <- data.frame(assortativity_shuffled = assortativity_shuffled) 
+ggplot(df) +
+  geom_histogram(aes(assortativity_shuffled), fill="lightgreen", binwidth = 0.005) + 
+  geom_vline(xintercept=assortativity_real, color="black",  linetype = "dashed")+ 
+  geom_vline(xintercept=q[1], color="red") +
+  geom_vline(xintercept=q[2], color="red") +
+  xlab("Случайно распределенное перемешанное значение assortiativity") +
+  ylab("Количество совпадений") +
+  geom_text(aes(x=assortativity_real-0.02, label="\nreal assortiativity", y=1000), colour="blue", angle=90, text=element_text(size=11)) +
+  ggtitle("Гистограмма распределения перемешанных значений assortiativity\nпо принадлежности фильма к конкретному сообществу") +
+  theme_bw() 
+```
+```{r}
+pvalue_02
+```
+
+
+#### Визуализация
+
+```{r message=FALSE, warning=FALSE}
+V(movies_graph)$membership = membership(leading)
+
+got_tbl = movies_graph %>% as_tbl_graph()
+got_tbl = got_tbl %>% activate(nodes) %>% 
+  mutate(membership = as.factor(membership)) %>% 
+  mutate(oscar = as.factor(oscar))
+
+ggraph(got_tbl) + 
+    geom_edge_link(alpha = 0.05) + 
+    geom_node_point(aes(colour = membership, shape = oscar, size = degree(got_tbl)/30), show.legend = FALSE) +
+   geom_mark_hull(
+    aes(x, y, group = membership, fill = membership),
+    concavity = 4,
+    expand = unit(2, "mm"),
+    alpha = 0.1
+  ) +
+  xlab("") +
+  ylab("") +
+  ggtitle("Сеть фильмов и их сообщества. \n(shape - oscar as factor)") +
+  theme_void()
+```
+
+#### Выводы
+У фильмов есть слабая статистически значимая(pvalue_01 <0.05) отрицательная склоннось (~ -0.03) формировать связи с фильмами по наличию у режиссеров этих фильмов премии оскар. Также наблюдается статистически значимая (pvalue_02 <0.05) сильная положительная склонность (~ 0.4) формировать связи с фильмами по их принадлежности к конкретному сообществу.
+
+## Общие выводы
+В первом исследовательском вопросе не удалось выявить статистических значимых взаимосвязей, однако впоследствии это сделать удалось и они оказались довольно интересны. Актерский состав фильмов и их теги остались без внимания в данной работе, однако, всё-же, основные интересующие меня исследовательские вопросы были успешно рассмотренны.
